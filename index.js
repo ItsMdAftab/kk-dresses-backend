@@ -29,7 +29,7 @@ app.use(express.json());
 ========================= */
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL, // SESSION POOLER URL
   ssl: { rejectUnauthorized: false },
   max: 2,
   idleTimeoutMillis: 5000,
@@ -152,9 +152,9 @@ app.post("/calculate-profit", async (req, res) => {
     const profit = soldPrice - actualPrice;
 
     await safeQuery(
-      `INSERT INTO sales 
-      (category, secret_code, actual_price, sold_price, profit, sold_by)
-      VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO sales
+       (category, secret_code, actual_price, sold_price, profit, sold_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [category, secretCode, actualPrice, soldPrice, profit, soldBy]
     );
 
@@ -169,7 +169,7 @@ app.post("/calculate-profit", async (req, res) => {
    OWNER DASHBOARD ROUTES
 ========================= */
 
-// TODAY SUMMARY (IST FIXED)
+// TODAY SUMMARY
 app.get("/owner/today-summary", async (req, res) => {
   try {
     const result = await safeQuery(`
@@ -189,7 +189,51 @@ app.get("/owner/today-summary", async (req, res) => {
   }
 });
 
-// CATEGORY STATS (IST FIXED)
+// SUMMARY (today / yesterday / month / year)
+app.get("/owner/summary", async (req, res) => {
+  try {
+    const { range } = req.query;
+    let condition = "";
+
+    if (range === "today") {
+      condition = `
+        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+      `;
+    } else if (range === "yesterday") {
+      condition = `
+        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+      `;
+    } else if (range === "month") {
+      condition = `
+        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+      `;
+    } else if (range === "year") {
+      condition = `
+        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+      `;
+    }
+
+    const result = await safeQuery(`
+      SELECT
+        COALESCE(SUM(sold_price),0) AS sales,
+        COALESCE(SUM(profit),0) AS profit,
+        COUNT(*)::int AS count
+      FROM sales
+      ${condition ? `WHERE ${condition}` : ""}
+    `);
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// CATEGORY STATS
 app.get("/owner/category-stats", async (req, res) => {
   try {
     const { range } = req.query;
@@ -218,9 +262,10 @@ app.get("/owner/category-stats", async (req, res) => {
     }
 
     const result = await safeQuery(`
-      SELECT category,
-             COUNT(*)::int AS count,
-             COALESCE(SUM(profit),0)::int AS profit
+      SELECT
+        category,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(profit),0)::int AS profit
       FROM sales
       ${condition ? `WHERE ${condition}` : ""}
       GROUP BY category
@@ -234,8 +279,50 @@ app.get("/owner/category-stats", async (req, res) => {
   }
 });
 
+// WORKER STATS
+app.get("/owner/worker-stats-full", async (req, res) => {
+  try {
+    const result = await safeQuery(`
+      SELECT
+        sold_by,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(profit),0)::int AS profit
+      FROM sales
+      GROUP BY sold_by
+      ORDER BY count DESC
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// SALES HISTORY
+app.get("/owner/sales-history", async (req, res) => {
+  try {
+    const result = await safeQuery(`
+      SELECT
+        category,
+        sold_price,
+        profit,
+        sold_by,
+        created_at
+      FROM sales
+      ORDER BY created_at DESC
+      LIMIT 50
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 /* =========================
-   START SERVER (RENDER + LOCAL)
+   START SERVER
 ========================= */
 
 const PORT = process.env.PORT || 5000;

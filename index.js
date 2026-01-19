@@ -153,12 +153,14 @@ app.post("/calculate-profit", async (req, res) => {
 // 📊 OWNER – TODAY SUMMARY
 app.get("/owner/today-summary", async (req, res) => {
   try {
-    const result = await pool.query(`
+    const result = await safeQuery(`
       SELECT 
         COALESCE(SUM(sold_price),0) AS total_sales,
         COALESCE(SUM(profit),0) AS total_profit
       FROM sales
-      WHERE DATE(created_at) = CURRENT_DATE
+      WHERE
+        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
     `);
 
     res.json(result.rows[0]);
@@ -167,6 +169,7 @@ app.get("/owner/today-summary", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // 📈 OWNER – MONTHLY SALES
 app.get("/owner/monthly-sales", async (req, res) => {
@@ -195,10 +198,27 @@ app.get("/owner/category-stats", async (req, res) => {
     const { range } = req.query;
 
     let condition = "";
-    if (range === "today") condition = "DATE(created_at) = CURRENT_DATE";
-    else if (range === "yesterday") condition = "DATE(created_at) = CURRENT_DATE - INTERVAL '1 day'";
-    else if (range === "month") condition = "created_at >= DATE_TRUNC('month', CURRENT_DATE)";
-    else if (range === "year") condition = "created_at >= DATE_TRUNC('year', CURRENT_DATE)";
+    if (range === "today") {
+  condition = `
+    (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+    = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+  `;
+} else if (range === "yesterday") {
+  condition = `
+    (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+    = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+  `;
+} else if (range === "month") {
+  condition = `
+    created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+    >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+  `;
+} else if (range === "year") {
+  condition = `
+    created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+    >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+  `;
+}
 
     const result = await pool.query(`
       SELECT category,

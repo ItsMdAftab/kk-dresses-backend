@@ -12,8 +12,11 @@ app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  family: 4, // 👈 FORCE IPv4 (THIS FIXES IT)
+  max: 5,                 // small pool
+  idleTimeoutMillis: 30000, // close idle connections
+  connectionTimeoutMillis: 10000,
 });
+
 
 app.get("/", (req, res) => {
   res.send("Ladies Shop Backend Running");

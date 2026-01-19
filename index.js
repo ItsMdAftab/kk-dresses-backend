@@ -7,23 +7,20 @@ const { Pool } = require("pg");
 const app = express();
 
 /* =========================
-   CORS CONFIG (VERY IMPORTANT)
+   CORS CONFIG
 ========================= */
 
 app.use(
   cors({
     origin: [
-      "http://localhost:3000", // local frontend
-      "https://kk-dresses-frontend.vercel.app" // deployed frontend (future)
+      "http://localhost:3000",
+      "https://kk-dresses-frontend.vercel.app"
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: false
   })
 );
-
-// 🔑 REQUIRED for Vercel preflight
-app.options("*", cors());
 
 app.use(express.json());
 
@@ -40,11 +37,25 @@ const pool = new Pool({
 });
 
 /* =========================
+   SAFE QUERY HELPER
+========================= */
+
+async function safeQuery(query, params = []) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(query, params);
+    return result;
+  } finally {
+    client.release();
+  }
+}
+
+/* =========================
    HEALTH CHECK
 ========================= */
 
 app.get("/", (req, res) => {
-  res.send("Ladies Shop Backend Running");
+  res.send("KK DRESSES Backend Running");
 });
 
 /* =========================
@@ -66,15 +77,15 @@ function decodePrice(code) {
 }
 
 /* =========================
-   ROUTES
+   AUTH ROUTES
 ========================= */
 
-// 🔐 LOGIN
+// LOGIN
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    const result = await pool.query(
+    const result = await safeQuery(
       "SELECT role FROM users WHERE username=$1 AND password=$2",
       [username, password]
     );
@@ -90,7 +101,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// 🧾 REGISTER WORKER
+// REGISTER WORKER
 app.post("/register-worker", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -99,7 +110,7 @@ app.post("/register-worker", async (req, res) => {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    const exists = await pool.query(
+    const exists = await safeQuery(
       "SELECT id FROM users WHERE username=$1",
       [username]
     );
@@ -108,7 +119,7 @@ app.post("/register-worker", async (req, res) => {
       return res.status(400).json({ error: "Username already exists" });
     }
 
-    await pool.query(
+    await safeQuery(
       "INSERT INTO users (username, password, role) VALUES ($1, $2, 'WORKER')",
       [username, password]
     );
@@ -120,7 +131,11 @@ app.post("/register-worker", async (req, res) => {
   }
 });
 
-// 💰 CALCULATE PROFIT
+/* =========================
+   SALES ROUTES
+========================= */
+
+// ADD SALE
 app.post("/calculate-profit", async (req, res) => {
   try {
     const { secretCode, soldPrice, category, soldBy } = req.body;
@@ -136,7 +151,7 @@ app.post("/calculate-profit", async (req, res) => {
 
     const profit = soldPrice - actualPrice;
 
-    await pool.query(
+    await safeQuery(
       `INSERT INTO sales 
       (category, secret_code, actual_price, sold_price, profit, sold_by)
       VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -150,7 +165,11 @@ app.post("/calculate-profit", async (req, res) => {
   }
 });
 
-// 📊 OWNER – TODAY SUMMARY
+/* =========================
+   OWNER DASHBOARD ROUTES
+========================= */
+
+// TODAY SUMMARY (IST FIXED)
 app.get("/owner/today-summary", async (req, res) => {
   try {
     const result = await safeQuery(`
@@ -170,57 +189,35 @@ app.get("/owner/today-summary", async (req, res) => {
   }
 });
 
-
-// 📈 OWNER – MONTHLY SALES
-app.get("/owner/monthly-sales", async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        DATE(created_at) AS date,
-        SUM(sold_price) AS sales,
-        SUM(profit) AS profit
-      FROM sales
-      WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)
-      GROUP BY DATE(created_at)
-      ORDER BY date
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// 📂 OWNER – CATEGORY STATS
+// CATEGORY STATS (IST FIXED)
 app.get("/owner/category-stats", async (req, res) => {
   try {
     const { range } = req.query;
-
     let condition = "";
-    if (range === "today") {
-  condition = `
-    (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-    = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-  `;
-} else if (range === "yesterday") {
-  condition = `
-    (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-    = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-  `;
-} else if (range === "month") {
-  condition = `
-    created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-    >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-  `;
-} else if (range === "year") {
-  condition = `
-    created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-    >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-  `;
-}
 
-    const result = await pool.query(`
+    if (range === "today") {
+      condition = `
+        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+      `;
+    } else if (range === "yesterday") {
+      condition = `
+        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+      `;
+    } else if (range === "month") {
+      condition = `
+        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+      `;
+    } else if (range === "year") {
+      condition = `
+        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+      `;
+    }
+
+    const result = await safeQuery(`
       SELECT category,
              COUNT(*)::int AS count,
              COALESCE(SUM(profit),0)::int AS profit
@@ -238,7 +235,10 @@ app.get("/owner/category-stats", async (req, res) => {
 });
 
 /* =========================
-   EXPORT FOR VERCEL
+   START SERVER (RENDER + LOCAL)
 ========================= */
 
-module.exports = app;
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`KK DRESSES backend running on port ${PORT}`);
+});

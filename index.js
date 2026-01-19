@@ -14,13 +14,18 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "https://kk-dresses-frontend.vercel.app"
+      "https://kk-dresses-frontend.vercel.app",
+      "https://itsmdaftab.github.io"   // ✅ GitHub Pages
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: false
   })
 );
+
+// ✅ REQUIRED for preflight
+app.options("*", cors());
+
 
 app.use(express.json());
 

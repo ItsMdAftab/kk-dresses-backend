@@ -29,10 +29,11 @@ app.use(express.json());
 ========================= */
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL, // SESSION POOLER URL
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 2,
-  idleTimeoutMillis: 5000,
+
+  max: 5,                  // 👈 allow 5 DB connections
+  idleTimeoutMillis: 10000, // close idle connections
   connectionTimeoutMillis: 15000
 });
 

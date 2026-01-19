@@ -62,10 +62,7 @@ app.post("/calculate-profit", async (req, res) => {
 });
 
 
-const PORT =  process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+
 app.get("/owner/today-summary", async (req, res) => {
   try {
     const result = await pool.query(`
@@ -245,4 +242,8 @@ app.get("/owner/summary", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
+});
+const PORT =  process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });

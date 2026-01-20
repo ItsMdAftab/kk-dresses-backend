@@ -7,27 +7,39 @@ const { Pool } = require("pg");
 const app = express();
 
 /* =========================
-   CORS CONFIG
+   CORS CONFIG (FIXED)
 ========================= */
 
-app.use(
-  cors({
-    origin: [
-      "http://localhost:3000",
-      "https://kk-dresses-frontend.vercel.app",
-      "https://itsmdaftab.github.io"   // ✅ GitHub Pages
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: false
-  })
-);
+const corsOptions = {
+  origin: [
+    "http://localhost:3000",
+    "https://kk-dresses-frontend.vercel.app",
+    "https://itsmdaftab.github.io"
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
 
-// ✅ REQUIRED for preflight
-app.options("*", cors());
+app.use(cors(corsOptions));
 
+// 🔑 IMPORTANT: Explicit OPTIONS handler (Vercel fix)
+app.options("/calculate-profit", cors(corsOptions));
+app.options("/login", cors(corsOptions));
+app.options("/register-worker", cors(corsOptions));
+
+/* =========================
+   MIDDLEWARE
+========================= */
 
 app.use(express.json());
+
+// Extra safety headers (recommended for Vercel)
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin);
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  next();
+});
 
 /* =========================
    DATABASE CONNECTION
@@ -36,21 +48,19 @@ app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-
-  max: 5,                  // 👈 allow 5 DB connections
-  idleTimeoutMillis: 10000, // close idle connections
-  connectionTimeoutMillis: 15000
+  max: 5,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 15000,
 });
 
 /* =========================
-   SAFE QUERY HELPER
+   SAFE QUERY
 ========================= */
 
 async function safeQuery(query, params = []) {
   const client = await pool.connect();
   try {
-    const result = await client.query(query, params);
-    return result;
+    return await client.query(query, params);
   } finally {
     client.release();
   }
@@ -61,7 +71,7 @@ async function safeQuery(query, params = []) {
 ========================= */
 
 app.get("/", (req, res) => {
-  res.send("KK DRESSES Backend Running");
+  res.send("KK DRESSES Backend Running ✅");
 });
 
 /* =========================
@@ -86,7 +96,6 @@ function decodePrice(code) {
    AUTH ROUTES
 ========================= */
 
-// LOGIN
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -107,7 +116,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// REGISTER WORKER
 app.post("/register-worker", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -138,10 +146,9 @@ app.post("/register-worker", async (req, res) => {
 });
 
 /* =========================
-   SALES ROUTES
+   SALES ROUTE (IMPORTANT)
 ========================= */
 
-// ADD SALE
 app.post("/calculate-profit", async (req, res) => {
   try {
     const { secretCode, soldPrice, category, soldBy } = req.body;
@@ -165,162 +172,6 @@ app.post("/calculate-profit", async (req, res) => {
     );
 
     res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   OWNER DASHBOARD ROUTES
-========================= */
-
-// TODAY SUMMARY
-app.get("/owner/today-summary", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT 
-        COALESCE(SUM(sold_price),0) AS total_sales,
-        COALESCE(SUM(profit),0) AS total_profit
-      FROM sales
-      WHERE
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-    `);
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// SUMMARY (today / yesterday / month / year)
-app.get("/owner/summary", async (req, res) => {
-  try {
-    const { range } = req.query;
-    let condition = "";
-
-    if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-      `;
-    } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-      `;
-    } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    }
-
-    const result = await safeQuery(`
-      SELECT
-        COALESCE(SUM(sold_price),0) AS sales,
-        COALESCE(SUM(profit),0) AS profit,
-        COUNT(*)::int AS count
-      FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
-    `);
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// CATEGORY STATS
-app.get("/owner/category-stats", async (req, res) => {
-  try {
-    const { range } = req.query;
-    let condition = "";
-
-    if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-      `;
-    } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-      `;
-    } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    }
-
-    const result = await safeQuery(`
-      SELECT
-        category,
-        COUNT(*)::int AS count,
-        COALESCE(SUM(profit),0)::int AS profit
-      FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
-      GROUP BY category
-      ORDER BY profit DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// WORKER STATS
-app.get("/owner/worker-stats-full", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT
-        sold_by,
-        COUNT(*)::int AS count,
-        COALESCE(SUM(profit),0)::int AS profit
-      FROM sales
-      GROUP BY sold_by
-      ORDER BY count DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// SALES HISTORY
-app.get("/owner/sales-history", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT
-        category,
-        sold_price,
-        profit,
-        sold_by,
-        created_at
-      FROM sales
-      ORDER BY created_at DESC
-      LIMIT 50
-    `);
-
-    res.json(result.rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });

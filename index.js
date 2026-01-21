@@ -501,7 +501,8 @@ app.get("/owner/worker-stats-full", async (req, res) => {
 ========================= */
 app.get("/owner/sales-history", async (req, res) => {
   try {
-    const { username } = req.query;
+    const { username, range } = req.query;
+
 
     if (!username) {
       return res.status(400).json({ error: "Missing username" });
@@ -519,26 +520,42 @@ app.get("/owner/sales-history", async (req, res) => {
 
     const shop_id = ownerResult.rows[0].shop_id;
 
-    const result = await safeQuery(
-      `
-      SELECT
-        id,
-        category,
-        sold_price,
-        profit,
-        sold_by,
-        secret_code,
-        payment_mode,
-        cash_amount,
-        online_amount,
-        created_at
-      FROM sales
-      WHERE shop_id = $1
-      ORDER BY created_at DESC
-      LIMIT 50
-      `,
-      [shop_id]
-    );
+    let dateCondition = "";
+
+if (range === "today") {
+  dateCondition = `
+    AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+        (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+  `;
+} else if (range === "yesterday") {
+  dateCondition = `
+    AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+        ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+  `;
+}
+
+const result = await safeQuery(
+  `
+  SELECT
+    id,
+    category,
+    sold_price,
+    profit,
+    sold_by,
+    secret_code,
+    payment_mode,
+    cash_amount,
+    online_amount,
+    created_at
+  FROM sales
+  WHERE shop_id = $1
+  ${dateCondition}
+  ORDER BY created_at DESC
+  LIMIT 50
+  `,
+  [shop_id]
+);
+
 
     res.json(result.rows);
   } catch (err) {

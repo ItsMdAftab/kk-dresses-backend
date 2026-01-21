@@ -258,17 +258,31 @@ app.get("/owner/summary", async (req, res) => {
 /* =========================
    CATEGORY STATS
 ========================= */
-app.get("/owner/category-stats", async (_, res) => {
-  const result = await safeQuery(`
-    SELECT category,
-           COUNT(*)::int AS count,
-           COALESCE(SUM(profit),0)::int AS profit
-    FROM sales
-    GROUP BY category
-    ORDER BY profit DESC
-  `);
-  res.json(result.rows);
-});
+app.get("/owner/category-stats", async (req, res) => {
+  const { range } = req.query;
+  let condition = "";
+
+  if (range === "today") {
+    condition = `
+      (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+      = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+    `;
+  } else if (range === "yesterday") {
+    condition = `
+      (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+      = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+    `;
+  } else if (range === "month") {
+    condition = `
+      created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+      >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+    `;
+  } else if (range === "year") {
+    condition = `
+      created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
+      >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+    `;
+  }});
 
 /* =========================
    WORKER STATS

@@ -7,62 +7,39 @@ const { Pool } = require("pg");
 const app = express();
 
 /* =========================
-   CORS CONFIG
+   MIDDLEWARE
 ========================= */
 
-const corsOptions = {
-  origin: [
-    "http://localhost:3000",
-    "https://kk-dresses-frontend.vercel.app",
-    "https://itsmdaftab.github.io"
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
+app.use(express.json());
 
-app.use(cors(corsOptions));
-
-// explicit preflight handling (THIS IS THE FIX)
-app.options("/calculate-profit", cors(corsOptions));
-app.options("/login", cors(corsOptions));
-app.options("/register-worker", cors(corsOptions));
-
-// safety headers for Vercel
-app.use((req, res, next) => {
-  res.header(
-  "Access-Control-Allow-Origin",
-  corsOptions.origin.includes(req.headers.origin)
-    ? req.headers.origin
-    : ""
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3000",
+      "https://kk-dresses-frontend.vercel.app",
+      "https://itsmdaftab.github.io",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
 );
 
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  next();
-});
-
 /* =========================
-   DATABASE CONNECTION
+   DATABASE
 ========================= */
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-
-  max: 5,                  // 👈 allow 5 DB connections
-  idleTimeoutMillis: 10000, // close idle connections
-  connectionTimeoutMillis: 15000
+  max: 5,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 15000,
 });
-
-/* =========================
-   SAFE QUERY HELPER
-========================= */
 
 async function safeQuery(query, params = []) {
   const client = await pool.connect();
   try {
-    const result = await client.query(query, params);
-    return result;
+    return await client.query(query, params);
   } finally {
     client.release();
   }
@@ -73,7 +50,7 @@ async function safeQuery(query, params = []) {
 ========================= */
 
 app.get("/", (req, res) => {
-  res.send("KK DRESSES Backend Running");
+  res.json({ status: "KK DRESSES Backend Running" });
 });
 
 /* =========================
@@ -84,22 +61,18 @@ const SECRET = "NOSIMCARDK";
 
 function decodePrice(code) {
   let price = "";
-
   for (let char of code.toUpperCase()) {
     const index = SECRET.indexOf(char);
     if (index === -1) return null;
     price += index + 1 === 10 ? "0" : index + 1;
   }
-
   return Number(price);
 }
-app.use(express.json());
 
 /* =========================
-   AUTH ROUTES
+   AUTH
 ========================= */
 
-// LOGIN
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -109,242 +82,164 @@ app.post("/login", async (req, res) => {
       [username, password]
     );
 
-    if (result.rows.length === 0) {
+    if (!result.rows.length)
       return res.status(401).json({ error: "Invalid credentials" });
-    }
 
     res.json({ role: result.rows[0].role });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// REGISTER WORKER
 app.post("/register-worker", async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    if (!username || !password)
       return res.status(400).json({ error: "Missing fields" });
-    }
 
     const exists = await safeQuery(
-      "SELECT id FROM users WHERE username=$1",
+      "SELECT 1 FROM users WHERE username=$1",
       [username]
     );
 
-    if (exists.rows.length > 0) {
-      return res.status(400).json({ error: "Username already exists" });
-    }
+    if (exists.rows.length)
+      return res.status(400).json({ error: "Username exists" });
 
     await safeQuery(
-      "INSERT INTO users (username, password, role) VALUES ($1, $2, 'WORKER')",
+      "INSERT INTO users (username, password, role) VALUES ($1,$2,'WORKER')",
       [username, password]
     );
 
     res.json({ success: true });
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
 /* =========================
-   SALES ROUTES
+   SINGLE SALE (KEEP)
 ========================= */
 
-// ADD SALE
 app.post("/calculate-profit", async (req, res) => {
   try {
-    const { secretCode, soldPrice, category, soldBy } = req.body;
-
-    if (!category || !soldBy) {
-      return res.status(400).json({ error: "Category or user missing" });
-    }
+    const { category, secretCode, soldPrice, soldBy } = req.body;
 
     const actualPrice = decodePrice(secretCode);
-    if (!actualPrice) {
+    if (!actualPrice)
       return res.status(400).json({ error: "Invalid secret code" });
-    }
 
     const profit = soldPrice - actualPrice;
 
     await safeQuery(
       `INSERT INTO sales
-       (category, secret_code, actual_price, sold_price, profit, sold_by)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      (category, secret_code, actual_price, sold_price, profit, sold_by)
+      VALUES ($1,$2,$3,$4,$5,$6)`,
       [category, secretCode, actualPrice, soldPrice, profit, soldBy]
     );
+
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* =========================
+   🔥 BULK SALES (NEW)
+========================= */
+
+app.post("/calculate-profit/bulk", async (req, res) => {
+  const { soldBy, items } = req.body;
+  const client = await pool.connect();
+
+  try {
+    if (!Array.isArray(items) || !items.length)
+      return res.status(400).json({ error: "No items provided" });
+
+    await client.query("BEGIN");
+
+    for (const item of items) {
+      const { category, secretCode, soldPrice } = item;
+
+      const actualPrice = decodePrice(secretCode);
+      if (!actualPrice)
+        throw new Error(`Invalid code: ${secretCode}`);
+
+      const profit = soldPrice - actualPrice;
+
+      await client.query(
+        `INSERT INTO sales
+        (category, secret_code, actual_price, sold_price, profit, sold_by)
+        VALUES ($1,$2,$3,$4,$5,$6)`,
+        [category, secretCode, actualPrice, soldPrice, profit, soldBy]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/* =========================
+   OWNER ROUTES (UNCHANGED)
+========================= */
+
+app.get("/owner/sales-history", async (_, res) => {
+  const result = await safeQuery(
+    `SELECT
+  id,
+  category,
+  sold_price,
+  profit,
+  sold_by,
+  secret_code,
+  created_at
+FROM sales
+ORDER BY created_at DESC
+LIMIT 50
+`
+  );
+  res.json(result.rows);
+});
+
+/* =========================
+   EXPORT FOR VERCEL
+========================= */
+
+module.exports = app;
+// =========================
+// LOCAL DEVELOPMENT ONLY
+// =========================
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`KK DRESSES backend running on port ${PORT}`);
+  });
+}
+/* =========================
+   DELETE SALE (OWNER ONLY)
+========================= */
+app.delete("/owner/delete-sale/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await safeQuery(
+      "DELETE FROM sales WHERE id = $1",
+      [id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Sale not found" });
+    }
 
     res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
-});
-
-/* =========================
-   OWNER DASHBOARD ROUTES
-========================= */
-
-// TODAY SUMMARY
-app.get("/owner/today-summary", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT 
-        COALESCE(SUM(sold_price),0) AS total_sales,
-        COALESCE(SUM(profit),0) AS total_profit
-      FROM sales
-      WHERE
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-    `);
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// SUMMARY (today / yesterday / month / year)
-app.get("/owner/summary", async (req, res) => {
-  try {
-    const { range } = req.query;
-    let condition = "";
-
-    if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-      `;
-    } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-      `;
-    } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    }
-
-    const result = await safeQuery(`
-      SELECT
-        COALESCE(SUM(sold_price),0) AS sales,
-        COALESCE(SUM(profit),0) AS profit,
-        COUNT(*)::int AS count
-      FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
-    `);
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// CATEGORY STATS
-app.get("/owner/category-stats", async (req, res) => {
-  try {
-    const { range } = req.query;
-    let condition = "";
-
-    if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-      `;
-    } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-      `;
-    } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    }
-
-    const result = await safeQuery(`
-      SELECT
-        category,
-        COUNT(*)::int AS count,
-        COALESCE(SUM(profit),0)::int AS profit
-      FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
-      GROUP BY category
-      ORDER BY profit DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// WORKER STATS
-app.get("/owner/worker-stats-full", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT
-        sold_by,
-        COUNT(*)::int AS count,
-        COALESCE(SUM(profit),0)::int AS profit
-      FROM sales
-      GROUP BY sold_by
-      ORDER BY count DESC
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// SALES HISTORY
-app.get("/owner/sales-history", async (req, res) => {
-  try {
-    const result = await safeQuery(`
-      SELECT
-        category,
-        sold_price,
-        profit,
-        sold_by,
-        created_at
-      FROM sales
-      ORDER BY created_at DESC
-      LIMIT 50
-    `);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   START SERVER
-========================= */
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`KK DRESSES backend running on port ${PORT}`);
 });

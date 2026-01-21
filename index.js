@@ -82,11 +82,14 @@ function decodePrice(code) {
 ========================= */
 app.post("/login", async (req, res) => {
   try {
-    const { username, password, shop } = req.body;
+    const username = req.body.username?.toUpperCase();
+const password = req.body.password;
+const shop = req.body.shop;
 
-    if (!username || !password || !shop) {
-      return res.status(400).json({ error: "Missing login fields" });
-    }
+if (!username || !password || !shop) {
+  return res.status(400).json({ error: "Missing login fields" });
+}
+
 
     const result = await safeQuery(
       `
@@ -121,7 +124,9 @@ app.post("/login", async (req, res) => {
 ========================= */
 app.post("/register-worker", async (req, res) => {
   try {
-    const { username, password, ownerUsername } = req.body;
+const username = req.body.username?.toUpperCase();
+const password = req.body.password;
+const ownerUsername = req.body.ownerUsername?.toUpperCase();
 
     if (!username || !password || !ownerUsername) {
       return res.status(400).json({ error: "Missing fields" });
@@ -171,14 +176,16 @@ app.post("/register-worker", async (req, res) => {
 app.post("/calculate-profit", async (req, res) => {
   try {
     const {
-      category,
-      secretCode,
-      soldPrice,
-      soldBy,
-      paymentMode,
-      cashAmount = 0,
-      onlineAmount = 0,
-    } = req.body;
+  category,
+  secretCode,
+  soldPrice,
+  paymentMode,
+  cashAmount = 0,
+  onlineAmount = 0,
+} = req.body;
+
+const soldBy = req.body.soldBy?.toUpperCase();
+
 
     if (!category || !secretCode || !soldPrice || !soldBy) {
       return res.status(400).json({ error: "Missing sale fields" });
@@ -239,13 +246,14 @@ app.post("/calculate-profit/bulk", async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const { soldBy, items } = req.body;
+    const soldBy = req.body.soldBy?.toUpperCase();
+    const items = req.body.items;
 
     if (!soldBy || !Array.isArray(items) || !items.length) {
       return res.status(400).json({ error: "Invalid bulk sale data" });
     }
 
-    // 🔐 Resolve shop_id from user (OWNER or WORKER)
+    // 🔐 Resolve shop_id
     const userResult = await client.query(
       "SELECT shop_id FROM users WHERE username=$1",
       [soldBy]
@@ -313,12 +321,15 @@ app.post("/calculate-profit/bulk", async (req, res) => {
   }
 });
 
+
 /* =========================
    OWNER — SUMMARY (SHOP SAFE)
 ========================= */
 app.get("/owner/summary", async (req, res) => {
   try {
-    const { username, range } = req.query;
+    const username = req.query.username?.toUpperCase();
+const range = req.query.range;
+
 
     if (!username) {
       return res.status(400).json({ error: "Missing username" });
@@ -386,7 +397,9 @@ app.get("/owner/summary", async (req, res) => {
 ========================= */
 app.get("/owner/category-stats", async (req, res) => {
   try {
-    const { username, range } = req.query;
+    const username = req.query.username?.toUpperCase();
+const range = req.query.range;
+
 
     if (!username) {
       return res.status(400).json({ error: "Missing username" });
@@ -457,7 +470,7 @@ app.get("/owner/category-stats", async (req, res) => {
 ========================= */
 app.get("/owner/worker-stats-full", async (req, res) => {
   try {
-    const { username } = req.query;
+    const username = req.query.username?.toUpperCase();
 
     if (!username) {
       return res.status(400).json({ error: "Missing username" });
@@ -501,7 +514,9 @@ app.get("/owner/worker-stats-full", async (req, res) => {
 ========================= */
 app.get("/owner/sales-history", async (req, res) => {
   try {
-    const { username, range } = req.query;
+    const username = req.query.username?.toUpperCase();
+const range = req.query.range;
+
 
 
     if (!username) {
@@ -553,7 +568,8 @@ app.get("/owner/sales-history", async (req, res) => {
 ========================= */
 app.delete("/owner/delete-sale/:id", async (req, res) => {
   try {
-    const { username } = req.query;
+const username = req.query.username?.toUpperCase();
+const range = req.query.range;
     const saleId = req.params.id;
 
     if (!username) {

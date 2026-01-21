@@ -47,67 +47,126 @@ async function safeQuery(query, params = []) {
    HEALTH CHECK
 ========================= */
 app.get("/", (req, res) => {
-  res.json({ status: "KK DRESSES Backend Running" });
+  res.json({ status: "KK GROUP backend running" });
 });
+
 
 /* =========================
    SECRET CODE DECODER
 ========================= */
 const SECRET = "NOSIMCARDK";
 
+/*
+  N O S I M C A R D K
+  1 2 3 4 5 6 7 8 9 0
+*/
 function decodePrice(code) {
+  if (!code) return null;
+
   let price = "";
-  for (let char of code.toUpperCase()) {
+
+  for (const char of code.toUpperCase()) {
     const index = SECRET.indexOf(char);
     if (index === -1) return null;
-    price += index + 1 === 10 ? "0" : index + 1;
+
+    // 10th character becomes 0
+    price += index === 9 ? "0" : String(index + 1);
   }
+
   return Number(price);
 }
 
+
 /* =========================
-   AUTH
+   AUTH — LOGIN
 ========================= */
 app.post("/login", async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, shop } = req.body;
+
+    if (!username || !password || !shop) {
+      return res.status(400).json({ error: "Missing login fields" });
+    }
+
     const result = await safeQuery(
-      "SELECT role FROM users WHERE username=$1 AND password=$2",
-      [username, password]
+      `
+      SELECT u.role, u.shop_id
+      FROM users u
+      JOIN shops s ON s.id = u.shop_id
+      WHERE u.username = $1
+        AND u.password = $2
+        AND s.name = $3
+      `,
+      [username, password, shop]
     );
-    if (!result.rows.length)
-      return res.status(401).json({ error: "Invalid credentials" });
-    res.json({ role: result.rows[0].role });
-  } catch {
+
+    if (!result.rows.length) {
+      return res
+        .status(401)
+        .json({ error: "Invalid credentials or shop" });
+    }
+
+    res.json({
+      role: result.rows[0].role,
+      shop_id: result.rows[0].shop_id,
+    });
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+/* =========================
+   AUTH — REGISTER WORKER
+========================= */
 app.post("/register-worker", async (req, res) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password)
-      return res.status(400).json({ error: "Missing fields" });
+    const { username, password, ownerUsername } = req.body;
 
+    if (!username || !password || !ownerUsername) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    // 🔐 Get shop_id from OWNER (not frontend)
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [ownerUsername]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    // Check if worker username already exists
     const exists = await safeQuery(
       "SELECT 1 FROM users WHERE username=$1",
       [username]
     );
-    if (exists.rows.length)
-      return res.status(400).json({ error: "Username exists" });
 
+    if (exists.rows.length) {
+      return res.status(400).json({ error: "Username already exists" });
+    }
+
+    // ✅ Insert worker with owner's shop_id
     await safeQuery(
-      "INSERT INTO users (username, password, role) VALUES ($1,$2,'WORKER')",
-      [username, password]
+      `
+      INSERT INTO users (username, password, role, shop_id)
+      VALUES ($1, $2, 'WORKER', $3)
+      `,
+      [username, password, shop_id]
     );
+
     res.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error("REGISTER WORKER ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
 /* =========================
-   SINGLE SALE
+   SALES — SINGLE SALE (SECURE)
 ========================= */
 app.post("/calculate-profit", async (req, res) => {
   try {
@@ -121,46 +180,82 @@ app.post("/calculate-profit", async (req, res) => {
       onlineAmount = 0,
     } = req.body;
 
-    const actualPrice = decodePrice(secretCode);
-    if (!actualPrice)
-      return res.status(400).json({ error: "Invalid secret code" });
+    if (!category || !secretCode || !soldPrice || !soldBy) {
+      return res.status(400).json({ error: "Missing sale fields" });
+    }
 
-    const profit = soldPrice - actualPrice;
+    // 🔐 Resolve shop_id from user (OWNER or WORKER)
+    const userResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1",
+      [soldBy]
+    );
+
+    if (!userResult.rows.length) {
+      return res.status(403).json({ error: "Invalid user" });
+    }
+
+    const shop_id = userResult.rows[0].shop_id;
+
+    const actualPrice = decodePrice(secretCode);
+    if (!actualPrice) {
+      return res.status(400).json({ error: "Invalid secret code" });
+    }
+
+    const profit = Number(soldPrice) - actualPrice;
 
     await safeQuery(
-      `INSERT INTO sales
+      `
+      INSERT INTO sales
       (category, secret_code, actual_price, sold_price, profit, sold_by,
-       payment_mode, cash_amount, online_amount)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+       payment_mode, cash_amount, online_amount, shop_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `,
       [
         category,
         secretCode,
         actualPrice,
-        soldPrice,
+        Number(soldPrice),
         profit,
         soldBy,
         paymentMode,
-        cashAmount,
-        onlineAmount,
+        Number(cashAmount),
+        Number(onlineAmount),
+        shop_id,
       ]
     );
 
     res.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error("SINGLE SALE ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+
 /* =========================
-   BULK SALES
+   SALES — BULK SALES (SECURE + TRANSACTION)
 ========================= */
 app.post("/calculate-profit/bulk", async (req, res) => {
-  const { soldBy, items } = req.body;
   const client = await pool.connect();
 
   try {
-    if (!Array.isArray(items) || !items.length)
-      return res.status(400).json({ error: "No items provided" });
+    const { soldBy, items } = req.body;
+
+    if (!soldBy || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ error: "Invalid bulk sale data" });
+    }
+
+    // 🔐 Resolve shop_id from user (OWNER or WORKER)
+    const userResult = await client.query(
+      "SELECT shop_id FROM users WHERE username=$1",
+      [soldBy]
+    );
+
+    if (!userResult.rows.length) {
+      return res.status(403).json({ error: "Invalid user" });
+    }
+
+    const shop_id = userResult.rows[0].shop_id;
 
     await client.query("BEGIN");
 
@@ -174,26 +269,35 @@ app.post("/calculate-profit/bulk", async (req, res) => {
         onlineAmount = 0,
       } = item;
 
-      const actualPrice = decodePrice(secretCode);
-      if (!actualPrice) throw new Error(`Invalid code: ${secretCode}`);
+      if (!category || !secretCode || !soldPrice) {
+        throw new Error("Missing item fields");
+      }
 
-      const profit = soldPrice - actualPrice;
+      const actualPrice = decodePrice(secretCode);
+      if (!actualPrice) {
+        throw new Error(`Invalid secret code: ${secretCode}`);
+      }
+
+      const profit = Number(soldPrice) - actualPrice;
 
       await client.query(
-        `INSERT INTO sales
+        `
+        INSERT INTO sales
         (category, secret_code, actual_price, sold_price, profit, sold_by,
-         payment_mode, cash_amount, online_amount)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         payment_mode, cash_amount, online_amount, shop_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        `,
         [
           category,
           secretCode,
           actualPrice,
-          soldPrice,
+          Number(soldPrice),
           profit,
           soldBy,
           paymentMode,
-          cashAmount,
-          onlineAmount,
+          Number(cashAmount),
+          Number(onlineAmount),
+          shop_id,
         ]
       );
     }
@@ -202,6 +306,7 @@ app.post("/calculate-profit/bulk", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     await client.query("ROLLBACK");
+    console.error("BULK SALE ERROR:", err.message);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -209,36 +314,54 @@ app.post("/calculate-profit/bulk", async (req, res) => {
 });
 
 /* =========================
-   OWNER SUMMARY (WITH CASH / ONLINE)
+   OWNER — SUMMARY (SHOP SAFE)
 ========================= */
 app.get("/owner/summary", async (req, res) => {
   try {
-    const { range } = req.query;
-    let condition = "";
+    const { username, range } = req.query;
+
+    if (!username) {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // 🔐 Resolve shop_id from OWNER
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [username]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    let dateCondition = "";
 
     if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            (NOW() AT TIME ZONE 'Asia/Kolkata')::date
       `;
     } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
       `;
     } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+      dateCondition = `
+        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+            date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
       `;
     } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+      dateCondition = `
+        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+            date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
       `;
     }
 
-    const result = await safeQuery(`
+    const result = await safeQuery(
+      `
       SELECT
         COALESCE(SUM(sold_price),0)::int AS sales,
         COALESCE(SUM(profit),0)::int AS profit,
@@ -246,119 +369,226 @@ app.get("/owner/summary", async (req, res) => {
         COALESCE(SUM(cash_amount),0)::int AS cash_total,
         COALESCE(SUM(online_amount),0)::int AS online_total
       FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
-    `);
+      WHERE shop_id = $1
+      ${dateCondition}
+      `,
+      [shop_id]
+    );
 
     res.json(result.rows[0]);
-  } catch {
+  } catch (err) {
+    console.error("OWNER SUMMARY ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
-
 /* =========================
-   CATEGORY STATS
-========================= */
-/* =========================
-   CATEGORY STATS
+   OWNER — CATEGORY STATS (SHOP SAFE)
 ========================= */
 app.get("/owner/category-stats", async (req, res) => {
   try {
-    const { range } = req.query;
-    let condition = "";
+    const { username, range } = req.query;
+
+    if (!username) {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // 🔐 Resolve shop_id from OWNER
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [username]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    let dateCondition = "";
 
     if (range === "today") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            (NOW() AT TIME ZONE 'Asia/Kolkata')::date
       `;
     } else if (range === "yesterday") {
-      condition = `
-        (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
-        = ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
       `;
     } else if (range === "month") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
+      dateCondition = `
+        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+            date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
       `;
     } else if (range === "year") {
-      condition = `
-        created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'
-        >= date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+      dateCondition = `
+        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+            date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
       `;
     }
 
-    const result = await safeQuery(`
-      SELECT category,
-             COUNT(*)::int AS count,
-             COALESCE(SUM(sold_price),0)::int AS sales,
-             COALESCE(SUM(profit),0)::int AS profit
+    const result = await safeQuery(
+      `
+      SELECT
+        category,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(sold_price),0)::int AS sales,
+        COALESCE(SUM(profit),0)::int AS profit
       FROM sales
-      ${condition ? `WHERE ${condition}` : ""}
+      WHERE shop_id = $1
+      ${dateCondition}
       GROUP BY category
       ORDER BY sales DESC
-    `);
+      `,
+      [shop_id]
+    );
 
     res.json(result.rows);
   } catch (err) {
+    console.error("CATEGORY STATS ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
 
 /* =========================
-   WORKER STATS
+   OWNER — WORKER STATS (SHOP SAFE)
 ========================= */
-app.get("/owner/worker-stats-full", async (_, res) => {
-  const result = await safeQuery(`
-    SELECT sold_by,
-           COUNT(*)::int AS count,
-           COALESCE(SUM(profit),0)::int AS profit
-    FROM sales
-    GROUP BY sold_by
-    ORDER BY count DESC
-  `);
-  res.json(result.rows);
+app.get("/owner/worker-stats-full", async (req, res) => {
+  try {
+    const { username } = req.query;
+
+    if (!username) {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // 🔐 Resolve shop_id from OWNER
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [username]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    const result = await safeQuery(
+      `
+      SELECT
+        sold_by,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(profit),0)::int AS profit
+      FROM sales
+      WHERE shop_id = $1
+      GROUP BY sold_by
+      ORDER BY count DESC
+      `,
+      [shop_id]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("WORKER STATS ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 /* =========================
-   HISTORY
+   OWNER — SALES HISTORY (SHOP SAFE)
 ========================= */
-app.get("/owner/sales-history", async (_, res) => {
-  const result = await safeQuery(`
-    SELECT id, category, sold_price, profit, sold_by,
-           secret_code, payment_mode, cash_amount, online_amount,
-           created_at
-    FROM sales
-    ORDER BY created_at DESC
-    LIMIT 50
-  `);
-  res.json(result.rows);
+app.get("/owner/sales-history", async (req, res) => {
+  try {
+    const { username } = req.query;
+
+    if (!username) {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // 🔐 Resolve shop_id from OWNER
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [username]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    const result = await safeQuery(
+      `
+      SELECT
+        id,
+        category,
+        sold_price,
+        profit,
+        sold_by,
+        secret_code,
+        payment_mode,
+        cash_amount,
+        online_amount,
+        created_at
+      FROM sales
+      WHERE shop_id = $1
+      ORDER BY created_at DESC
+      LIMIT 50
+      `,
+      [shop_id]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("SALES HISTORY ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 /* =========================
-   DELETE SALE
+   OWNER — DELETE SALE (SHOP SAFE)
 ========================= */
 app.delete("/owner/delete-sale/:id", async (req, res) => {
-  const result = await safeQuery("DELETE FROM sales WHERE id=$1", [
-    req.params.id,
-  ]);
-  if (!result.rowCount)
-    return res.status(404).json({ error: "Sale not found" });
-  res.json({ success: true });
+  try {
+    const { username } = req.query;
+    const saleId = req.params.id;
+
+    if (!username) {
+      return res.status(400).json({ error: "Missing username" });
+    }
+
+    // 🔐 Resolve shop_id from OWNER
+    const ownerResult = await safeQuery(
+      "SELECT shop_id FROM users WHERE username=$1 AND role='OWNER'",
+      [username]
+    );
+
+    if (!ownerResult.rows.length) {
+      return res.status(403).json({ error: "Invalid owner" });
+    }
+
+    const shop_id = ownerResult.rows[0].shop_id;
+
+    const result = await safeQuery(
+      "DELETE FROM sales WHERE id=$1 AND shop_id=$2",
+      [saleId, shop_id]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ error: "Sale not found" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE SALE ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-/* =========================
-   EXPORT FOR VERCEL
-========================= */
-module.exports = app;
 
-/* =========================
-   LOCAL DEV
-========================= */
-if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () =>
-    console.log(`KK DRESSES backend running on port ${PORT}`)
-  );
-}
+
+
+
+

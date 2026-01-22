@@ -209,6 +209,21 @@ const soldBy = req.body.soldBy?.toUpperCase();
     }
 
     const profit = Number(soldPrice) - actualPrice;
+let finalCash = 0;
+let finalOnline = 0;
+
+if (paymentMode === "CASH") {
+  finalCash = Number(soldPrice);
+  finalOnline = 0;
+}
+else if (paymentMode === "ONLINE") {
+  finalCash = 0;
+  finalOnline = Number(soldPrice);
+}
+else {
+  finalCash = Number(cashAmount || 0);
+  finalOnline = Number(onlineAmount || 0);
+}
 
     await safeQuery(
       `
@@ -225,8 +240,9 @@ const soldBy = req.body.soldBy?.toUpperCase();
         profit,
         soldBy,
         paymentMode,
-        Number(cashAmount),
-        Number(onlineAmount),
+        finalCash,
+finalOnline,
+
         shop_id,
       ]
     );
@@ -276,6 +292,22 @@ app.post("/calculate-profit/bulk", async (req, res) => {
         cashAmount = 0,
         onlineAmount = 0,
       } = item;
+      let finalCash = 0;
+let finalOnline = 0;
+
+if (paymentMode === "CASH") {
+  finalCash = Number(soldPrice);
+  finalOnline = 0;
+} 
+else if (paymentMode === "ONLINE") {
+  finalCash = 0;
+  finalOnline = Number(soldPrice);
+} 
+else {
+  finalCash = Number(cashAmount || 0);
+  finalOnline = Number(onlineAmount || 0);
+}
+
 
       if (!category || !secretCode || !soldPrice) {
         throw new Error("Missing item fields");
@@ -303,8 +335,9 @@ app.post("/calculate-profit/bulk", async (req, res) => {
           profit,
           soldBy,
           paymentMode,
-          Number(cashAmount),
-          Number(onlineAmount),
+          finalCash,
+finalOnline,
+
           shop_id,
         ]
       );
@@ -329,6 +362,11 @@ app.get("/owner/summary", async (req, res) => {
   try {
     const username = req.query.username?.toUpperCase();
 const range = req.query.range;
+const month = Number(req.query.month); // 1-12
+const year = Number(req.query.year);   // 2024, 2025
+const from = req.query.from;           // yyyy-mm-dd
+const to = req.query.to;               // yyyy-mm-dd
+
 
 
     if (!username) {
@@ -349,27 +387,48 @@ const range = req.query.range;
 
     let dateCondition = "";
 
-    if (range === "today") {
-      dateCondition = `
-        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
-            (NOW() AT TIME ZONE 'Asia/Kolkata')::date
-      `;
-    } else if (range === "yesterday") {
-      dateCondition = `
-        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
-            ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
-      `;
-    } else if (range === "month") {
-      dateCondition = `
-        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
-            date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    } else if (range === "year") {
-      dateCondition = `
-        AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
-            date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
-      `;
-    }
+/* TODAY */
+if (range === "today") {
+  dateCondition = `
+    AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+        (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+  `;
+}
+
+/* YESTERDAY */
+else if (range === "yesterday") {
+  dateCondition = `
+    AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+        ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+  `;
+}
+
+/* SELECTED MONTH + YEAR */
+else if (range === "month" && month && year) {
+  dateCondition = `
+    AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+        make_date(${year}, ${month}, 1)
+    AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' <
+        (make_date(${year}, ${month}, 1) + INTERVAL '1 month')
+  `;
+}
+
+/* CURRENT YEAR */
+else if (range === "year") {
+  dateCondition = `
+    AND created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' >=
+        date_trunc('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+  `;
+}
+
+/* CUSTOM DATE RANGE */
+else if (range === "custom" && from && to) {
+  dateCondition = `
+    AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        BETWEEN '${from}' AND '${to}'
+  `;
+}
+
 
     const result = await safeQuery(
       `
@@ -512,12 +571,13 @@ app.get("/owner/worker-stats-full", async (req, res) => {
 /* =========================
    OWNER — SALES HISTORY (SHOP SAFE)
 ========================= */
+/* =========================
+   OWNER — SALES HISTORY (SHOP SAFE + RANGE)
+========================= */
 app.get("/owner/sales-history", async (req, res) => {
   try {
     const username = req.query.username?.toUpperCase();
-const range = req.query.range;
-
-
+    const range = req.query.range; // 👈 today / yesterday
 
     if (!username) {
       return res.status(400).json({ error: "Missing username" });
@@ -535,6 +595,21 @@ const range = req.query.range;
 
     const shop_id = ownerResult.rows[0].shop_id;
 
+    let dateCondition = "";
+
+    if (range === "today") {
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+      `;
+    } 
+    else if (range === "yesterday") {
+      dateCondition = `
+        AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date =
+            ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '1 day')::date
+      `;
+    }
+
     const result = await safeQuery(
       `
       SELECT
@@ -550,8 +625,8 @@ const range = req.query.range;
         created_at
       FROM sales
       WHERE shop_id = $1
+      ${dateCondition}
       ORDER BY created_at DESC
-      LIMIT 50
       `,
       [shop_id]
     );
@@ -562,6 +637,7 @@ const range = req.query.range;
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 /* =========================
    OWNER — DELETE SALE (SHOP SAFE)
@@ -603,6 +679,14 @@ const range = req.query.range;
     res.status(500).json({ error: "Server error" });
   }
 });
+const PORT = process.env.PORT || 5000;
+
+// 👇 Only start server when running locally
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`✅ Backend running locally on http://localhost:${PORT}`);
+  });
+}
 
 module.exports = app;
 

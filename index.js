@@ -46,6 +46,15 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+app.get("/test-push", async (req, res) => {
+  try {
+    await sendPushToOwner(1, "🔥 TEST PUSH FROM SERVER");
+    res.json({ success: true });
+  } catch (err) {
+    console.error("TEST PUSH ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* =========================
    DATABASE

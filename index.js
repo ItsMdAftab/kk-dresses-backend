@@ -5,6 +5,30 @@ const cors = require("cors");
 const { Pool } = require("pg");
 
 const app = express();
+const admin = require("./firebaseAdmin");
+
+async function sendPushToOwner(shop_id, payload) {
+  const result = await safeQuery(
+    `
+    SELECT od.fcm_token
+    FROM owner_devices od
+    JOIN users u ON u.username = od.username
+    WHERE u.shop_id = $1 AND u.role = 'OWNER'
+    `,
+    [shop_id]
+  );
+
+  const tokens = result.rows.map(r => r.fcm_token);
+  if (!tokens.length) return;
+
+  await admin.messaging().sendEachForMulticast({
+    tokens,
+    notification: {
+      title: "🧾 New Sale Added",
+      body: payload,
+    },
+  });
+}
 
 /* =========================
    MIDDLEWARE
@@ -246,6 +270,10 @@ finalOnline,
         shop_id,
       ]
     );
+    await sendPushToOwner(
+  shop_id,
+  `₹${soldPrice} sold by ${soldBy}`
+);
 
     res.json({ success: true });
   } catch (err) {
@@ -634,6 +662,34 @@ app.get("/owner/sales-history", async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error("SALES HISTORY ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+/* =========================
+   OWNER — SAVE DEVICE TOKEN
+========================= */
+app.post("/owner/save-device", async (req, res) => {
+  try {
+    const username = req.body.username?.toUpperCase();
+    const token = req.body.token;
+
+    if (!username || !token) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    await safeQuery(
+      `
+      INSERT INTO owner_devices (username, fcm_token)
+      VALUES ($1, $2)
+      ON CONFLICT (fcm_token)
+      DO NOTHING
+      `,
+      [username, token]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("SAVE DEVICE ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });

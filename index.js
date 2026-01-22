@@ -23,7 +23,7 @@ async function sendPushToOwner(shop_id, payload) {
 
   await admin.messaging().sendEachForMulticast({
     tokens,
-    notification: {
+    data: {
       title: "🧾 New Sale Added",
       body: payload,
     },
@@ -46,15 +46,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.get("/test-push", async (req, res) => {
-  try {
-    await sendPushToOwner("ad7b40b9-0c50-413f-9147-7b5b707cf662", "🔥 TEST PUSH FROM SERVER");
-    res.json({ success: true });
-  } catch (err) {
-    console.error("TEST PUSH ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
+
 
 /* =========================
    DATABASE
@@ -381,7 +373,12 @@ finalOnline,
     }
 
     await client.query("COMMIT");
-    res.json({ success: true });
+    await sendPushToOwner(
+  shop_id,
+  `🧾 ${items.length} items sold by ${soldBy}`
+);
+
+res.json({ success: true });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("BULK SALE ERROR:", err.message);

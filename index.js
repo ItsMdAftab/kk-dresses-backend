@@ -48,7 +48,7 @@ app.use(
 );
 app.get("/test-push", async (req, res) => {
   try {
-    await sendPushToOwner(1, "🔥 TEST PUSH FROM SERVER");
+    await sendPushToOwner("ad7b40b9-0c50-413f-9147-7b5b707cf662", "🔥 TEST PUSH FROM SERVER");
     res.json({ success: true });
   } catch (err) {
     console.error("TEST PUSH ERROR:", err);

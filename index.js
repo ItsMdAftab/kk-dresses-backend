@@ -7,7 +7,7 @@ const { Pool } = require("pg");
 const app = express();
 const admin = require("./firebaseAdmin");
 
-async function sendPushToOwner(shop_id, payload) {
+async function sendPushToOwner(shop_id, message) {
   const result = await safeQuery(
     `
     SELECT od.fcm_token
@@ -24,11 +24,12 @@ async function sendPushToOwner(shop_id, payload) {
   await admin.messaging().sendEachForMulticast({
     tokens,
     data: {
-      title: "🧾 New Sale Added",
-      body: payload,
+      title: "🧾 Sale Update",
+      body: message,
     },
   });
 }
+
 
 /* =========================
    MIDDLEWARE
@@ -201,22 +202,21 @@ const ownerUsername = req.body.ownerUsername?.toUpperCase();
 app.post("/calculate-profit", async (req, res) => {
   try {
     const {
-  category,
-  secretCode,
-  soldPrice,
-  paymentMode,
-  cashAmount = 0,
-  onlineAmount = 0,
-} = req.body;
+      category,
+      secretCode,
+      soldPrice,
+      paymentMode,
+      cashAmount = 0,
+      onlineAmount = 0,
+    } = req.body;
 
-const soldBy = req.body.soldBy?.toUpperCase();
-
+    const soldBy = req.body.soldBy?.toUpperCase();
 
     if (!category || !secretCode || !soldPrice || !soldBy) {
       return res.status(400).json({ error: "Missing sale fields" });
     }
 
-    // 🔐 Resolve shop_id from user (OWNER or WORKER)
+    // 🔐 Resolve shop_id
     const userResult = await safeQuery(
       "SELECT shop_id FROM users WHERE username=$1",
       [soldBy]
@@ -234,21 +234,18 @@ const soldBy = req.body.soldBy?.toUpperCase();
     }
 
     const profit = Number(soldPrice) - actualPrice;
-let finalCash = 0;
-let finalOnline = 0;
 
-if (paymentMode === "CASH") {
-  finalCash = Number(soldPrice);
-  finalOnline = 0;
-}
-else if (paymentMode === "ONLINE") {
-  finalCash = 0;
-  finalOnline = Number(soldPrice);
-}
-else {
-  finalCash = Number(cashAmount || 0);
-  finalOnline = Number(onlineAmount || 0);
-}
+    let finalCash = 0;
+    let finalOnline = 0;
+
+    if (paymentMode === "CASH") {
+      finalCash = Number(soldPrice);
+    } else if (paymentMode === "ONLINE") {
+      finalOnline = Number(soldPrice);
+    } else {
+      finalCash = Number(cashAmount || 0);
+      finalOnline = Number(onlineAmount || 0);
+    }
 
     await safeQuery(
       `
@@ -266,15 +263,28 @@ else {
         soldBy,
         paymentMode,
         finalCash,
-finalOnline,
-
+        finalOnline,
         shop_id,
       ]
     );
-    await sendPushToOwner(
-  shop_id,
-  `₹${soldPrice} sold by ${soldBy}`
-);
+
+    // 🔔 Push message
+    let paymentText = "";
+
+    if (paymentMode === "CASH") {
+      paymentText = `CASH ₹${finalCash}`;
+    } else if (paymentMode === "ONLINE") {
+      paymentText = `ONLINE ₹${finalOnline}`;
+    } else {
+      paymentText = `CASH ₹${finalCash} + ONLINE ₹${finalOnline}`;
+    }
+
+    const message =
+`🧾 ${category} sold
+₹${soldPrice} by ${soldBy}
+Payment: ${paymentText}`;
+
+    await sendPushToOwner(shop_id, message);
 
     res.json({ success: true });
   } catch (err) {
@@ -289,6 +299,11 @@ finalOnline,
 ========================= */
 app.post("/calculate-profit/bulk", async (req, res) => {
   const client = await pool.connect();
+
+  let categories = [];
+  let totalSold = 0;
+  let totalCash = 0;
+  let totalOnline = 0;
 
   try {
     const soldBy = req.body.soldBy?.toUpperCase();
@@ -321,22 +336,6 @@ app.post("/calculate-profit/bulk", async (req, res) => {
         cashAmount = 0,
         onlineAmount = 0,
       } = item;
-      let finalCash = 0;
-let finalOnline = 0;
-
-if (paymentMode === "CASH") {
-  finalCash = Number(soldPrice);
-  finalOnline = 0;
-} 
-else if (paymentMode === "ONLINE") {
-  finalCash = 0;
-  finalOnline = Number(soldPrice);
-} 
-else {
-  finalCash = Number(cashAmount || 0);
-  finalOnline = Number(onlineAmount || 0);
-}
-
 
       if (!category || !secretCode || !soldPrice) {
         throw new Error("Missing item fields");
@@ -348,6 +347,24 @@ else {
       }
 
       const profit = Number(soldPrice) - actualPrice;
+
+      let finalCash = 0;
+      let finalOnline = 0;
+
+      if (paymentMode === "CASH") {
+        finalCash = Number(soldPrice);
+      } else if (paymentMode === "ONLINE") {
+        finalOnline = Number(soldPrice);
+      } else {
+        finalCash = Number(cashAmount || 0);
+        finalOnline = Number(onlineAmount || 0);
+      }
+
+      // 🔢 Track totals
+      categories.push(category);
+      totalSold += Number(soldPrice);
+      totalCash += finalCash;
+      totalOnline += finalOnline;
 
       await client.query(
         `
@@ -365,20 +382,34 @@ else {
           soldBy,
           paymentMode,
           finalCash,
-finalOnline,
-
+          finalOnline,
           shop_id,
         ]
       );
     }
 
     await client.query("COMMIT");
-    await sendPushToOwner(
-  shop_id,
-  `🧾 ${items.length} items sold by ${soldBy}`
-);
 
-res.json({ success: true });
+    let paymentText = "";
+
+    if (totalCash && totalOnline) {
+      paymentText = `CASH ₹${totalCash} + ONLINE ₹${totalOnline}`;
+    } else if (totalCash) {
+      paymentText = `CASH ₹${totalCash}`;
+    } else {
+      paymentText = `ONLINE ₹${totalOnline}`;
+    }
+
+    const message =
+`🧾 Bulk Sale
+${categories.join(", ")}
+Total: ₹${totalSold}
+Payment: ${paymentText}
+Sold by ${soldBy}`;
+
+    await sendPushToOwner(shop_id, message);
+
+    res.json({ success: true });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("BULK SALE ERROR:", err.message);
@@ -387,6 +418,7 @@ res.json({ success: true });
     client.release();
   }
 });
+
 
 
 /* =========================

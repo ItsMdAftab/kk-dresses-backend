@@ -109,6 +109,15 @@ function decodePrice(code) {
   return Number(price);
 }
 
+function paymentLine(cash, online) {
+  if (cash && online) {
+    return `💵 CASH ₹${cash} | 📲 ONLINE ₹${online}`;
+  }
+  if (cash) {
+    return `💵 CASH ₹${cash}`;
+  }
+  return `📲 ONLINE ₹${online}`;
+}
 
 /* =========================
    AUTH — LOGIN
@@ -286,10 +295,13 @@ app.post("/calculate-profit", async (req, res) => {
       paymentText = `CASH ₹${finalCash} + ONLINE ₹${finalOnline}`;
     }
 
-    const message =
-`🧾 ${category} sold
-₹${soldPrice} by ${soldBy}
-Payment: ${paymentText}`;
+  const message =
+`🛍️ ${category} Sold
+━━━━━━━━━━━━
+💰 Price: ₹${soldPrice}
+👤 Sold by: ${soldBy}
+${paymentLine(finalCash, finalOnline)}`;
+
 
     await sendPushToOwner(shop_id, message);
 
@@ -407,12 +419,14 @@ app.post("/calculate-profit/bulk", async (req, res) => {
       paymentText = `ONLINE ₹${totalOnline}`;
     }
 
-    const message =
+   const message =
 `🧾 Bulk Sale
-${categories.join(", ")}
-Total: ₹${totalSold}
-Payment: ${paymentText}
-Sold by ${soldBy}`;
+━━━━━━━━━━━━
+🛍️ ${categories.join(", ")}
+💰 Total: ₹${totalSold}
+${paymentLine(totalCash, totalOnline)}
+👤 Sold by: ${soldBy}`;
+
 
     await sendPushToOwner(shop_id, message);
 

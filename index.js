@@ -22,12 +22,19 @@ async function sendPushToOwner(shop_id, message) {
   if (!tokens.length) return;
 
   await admin.messaging().sendEachForMulticast({
-    tokens,
-    data: {
-      title: "🧾 Sale Update",
-      body: message,
+  tokens,
+  notification: {
+    title: "🧾 Sale Update",
+    body: message,
+  },
+  android: {
+    notification: {
+      channelId: "default",
+      priority: "high",
     },
-  });
+  },
+});
+
 }
 
 
